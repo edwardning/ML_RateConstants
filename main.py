@@ -1,3 +1,5 @@
+# Author: Ning Li, contact: edwardln@stu.xjtu.edu.cn or l.ning@itv.rwth-aachen.de
+
 import os
 import time
 import math
