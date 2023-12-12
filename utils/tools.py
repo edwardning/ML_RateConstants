@@ -169,86 +169,102 @@ def cal_k(A, n, E, T):
     return A * T ** n * math.exp(- (E * cal) / (R * T))
 
 
-def score(rxn, y_true, y_pred, save_file=r'validation.txt', print_info=True):
+def merge_socre(a, b):
+    # b = a + b
+    if len(b) == 0:
+        b['true'] = np.array(a['true']).copy()
+        b['pred'] = np.array(a['pred']).copy()
+        b['true'].fill(0)
+        b['pred'].fill(0)
+    for x in [a, b]:
+        x['true'] = np.array(x['true'])
+        x['pred'] = np.array(x['pred'])
+    a['true'] += b['true']
+    a['pred'] += b['pred']
+    return a
+
+
+def score(rxn, y_true, y_pred, save_file=None, print_info=True):
     """
     Final Evaluation Criteria
     :param rxn: reactions
-    :param y_true: [[lnA, n, E], ] of truth
-    :param y_pred: [[lnA, n, E], ] of prediction
-    :param T_eg: given temperature for plotting
-    :param save_file:
-    :param print_info:
-    :return:
+    :param y_true: [[lnA, n, E], ...] of truth
+    :param y_pred: [[lnA, n, E], ...] of prediction
+    :param save_file: save result to .txt file
+    :param print_info: boolean
+    :return: evaluation metric
     """
     lnA_true, n_true, E_true = [x[0] for x in y_true], [x[1] for x in y_true], [x[2] for x in y_true]
     lnA_pred, n_pred, E_pred = [x[0] for x in y_pred], [x[1] for x in y_pred], [x[2] for x in y_pred]
 
-    lnk_true, lnk_pred, rmse, nrmse = {}, {}, {}, {}
+    lnk_true, lnk_pred = {}, {}
     lnk_all_true, lnk_all_pred = [], []
-    for T_r in range(5, 21):  # temperature range of 500-2000 K
-        T = 10000 / T_r
-        T_ = str(int(T))
-        lnk_true[T_], lnk_pred[T_] = [], []
+    k_uf = {}  # uncertainty factor of rate constants, define as max(k_pred/k_true, k_true/k_pred).
+
+    T_range = [x for x in range(500, 2001, 100)]  # temperature range of 500-2000 K
+    for T in T_range:
+        lnk_true[T], lnk_pred[T], k_uf[T] = [], [], []
         for i in range(len(rxn)):
-            lnk_true[T_].append(cal_lnk(lnA_true[i], n_true[i], E_true[i], T))
-            lnk_pred[T_].append(cal_lnk(lnA_pred[i], n_pred[i], E_pred[i], T))
-        rmse[T_] = RMSE(lnk_true[T_], lnk_pred[T_])
-        nrmse[T_] = NRMSE(lnk_true[T_], lnk_pred[T_])
-        lnk_all_true.extend(lnk_true[T_])
-        lnk_all_pred.extend(lnk_pred[T_])
-    T_eg = [500, 1000, 2000]
+            lnk_t = cal_lnk(lnA_true[i], n_true[i], E_true[i], T)
+            lnk_p = cal_lnk(lnA_pred[i], n_pred[i], E_pred[i], T)
+            lnk_true[T].append(lnk_t)
+            lnk_pred[T].append(lnk_p)
+            # k_uf[T].append(max(math.exp(lnk_t) / math.exp(lnk_p), math.exp(lnk_p) / math.exp(lnk_t)))
+            k_uf[T].append(max(math.exp(lnk_p - lnk_t), math.exp(lnk_t - lnk_p)))
+        lnk_all_true.extend(lnk_true[T])
+        lnk_all_pred.extend(lnk_pred[T])
 
-    with open(save_file, 'w') as f:
-        info = 'Validation results on test dataset:\n'
-        info += 'R2 of lnk within 500-2000K is {:.4f}\n'.format(r2_score(lnk_all_true, lnk_all_pred))
-        info += 'Average RMSE of lnk within 500-2000K is {:.4f}\n'.format(sum(rmse.values()) / len(rmse))
-        info += 'Average NRMSE of lnk within 500-2000K is {:.2%}\n\n'.format(sum(nrmse.values()) / len(nrmse))
+    info = 'Evaluation results:\n'
+    info += '+-----+----------+----------+----------+----------+\n'
+    info += '|     |    R2    |   RMSE   |    MPE   |   NRMSE  |\n'
+    info += '+-----+----------+----------+----------+----------+\n'
+    info += '| lnA |{:^10.4f}|{:^10.4f}|{:^10.2%}|{:^10.2%}|\n'.format(r2_score(lnA_true, lnA_pred),
+                                                                       RMSE(lnA_true, lnA_pred),
+                                                                       MPE(lnA_true, lnA_pred),
+                                                                       NRMSE(lnA_true, lnA_pred))
+    info += '| n   |{:^10.4f}|{:^10.4f}|{:^10.2%}|{:^10.2%}|\n'.format(r2_score(n_true, n_pred),
+                                                                       RMSE(n_true, n_pred),
+                                                                       MPE(n_true, n_pred),
+                                                                       NRMSE(n_true, n_pred))
+    info += '| Ea  |{:^10.4f}|{:^10.1f}|{:^10.2%}|{:^10.2%}|\n'.format(r2_score(E_true, E_pred),
+                                                                       RMSE(E_true, E_pred),
+                                                                       MPE(E_true, E_pred),
+                                                                       NRMSE(E_true, E_pred))
+    info += '| lnk |{:^10.4f}|{:^10.4f}|{:^10.2%}|{:^10.2%}|\n'.format(r2_score(lnk_all_true, lnk_all_pred),
+                                                                       RMSE(lnk_all_true, lnk_all_pred),
+                                                                       MPE(lnk_all_true, lnk_all_pred),
+                                                                       NRMSE(lnk_all_true, lnk_all_pred))
+    info += '+-----+----------+----------+----------+----------+\n'
 
-        info += '\tR2 score\tRMSE\tMPE\tNRMSE\n'
-        info += 'lnA:\t{:.4f}\t{:.4f}\t{:.2%}\t{:.2%}\n'.format(r2_score(lnA_true, lnA_pred),
-                                                                RMSE(lnA_true, lnA_pred),
-                                                                MPE(lnA_true, lnA_pred),
-                                                                NRMSE(lnA_true, lnA_pred))
-        info += 'n:\t{:.4f}\t{:.4f}\t{:.2%}\t{:.2%}\n'.format(r2_score(n_true, n_pred),
-                                                              RMSE(n_true, n_pred),
-                                                              MPE(n_true, n_pred),
-                                                              NRMSE(n_true, n_pred))
-        info += 'E:\t{:.4f}\t{:.4f}\t{:.2%}\t{:.2%}\n'.format(r2_score(E_true, E_pred),
-                                                              RMSE(E_true, E_pred),
-                                                              MPE(E_true, E_pred),
-                                                              NRMSE(E_true, E_pred))
-        for temp in T_eg:
-            info += 'lnk({}K):\t{:.4f}\t{:.4f}\t{:.2%}\t{:.2%}\n'.format(
-                temp,
-                r2_score(lnk_true[str(temp)], lnk_pred[str(temp)]),
-                RMSE(lnk_true[str(temp)], lnk_pred[str(temp)]),
-                MPE(lnk_true[str(temp)], lnk_pred[str(temp)]),
-                NRMSE(lnk_true[str(temp)], lnk_pred[str(temp)]))
-        info += '\nDetails:\n'
-        info += 'Temp.:'
-        for i in rmse:
-            info += '\t{}'.format(int(i))
-        info += '\nRMSE:'
-        for i in rmse:
-            info += '\t{:.4f}'.format(rmse[i])
-        info += '\nNRMSE:'
-        for i in nrmse:
-            info += '\t{:.2%}'.format(nrmse[i])
+    info += '\nEvaluation of lnk by temperature:\n'
+    info += '+-----+----------+----------+----------+----------+\n'
+    info += '| T/K |    R2    |   RMSE   |    MPE   |   NRMSE  |\n'
+    info += '+-----+----------+----------+----------+----------+\n'
+    for T in T_range:
+        info += '|{:^5d}|{:^10.4f}|{:^10.4f}|{:^10.2%}|{:^10.2%}|\n'.format(T, r2_score(lnk_true[T], lnk_pred[T]),
+                                                                            RMSE(lnk_true[T], lnk_pred[T]),
+                                                                            MPE(lnk_true[T], lnk_pred[T]),
+                                                                            NRMSE(lnk_true[T], lnk_pred[T]))
+    info += '+-----+----------+----------+----------+----------+\n'
 
-        info += '\n\tTruth\t\t\t\t\t\tPrediction\n'
-        info += 'Rxn.\tlnA\tn\tE\tlnk({}K)\tlnk({}K)\tlnk({}K)\tlnA\tn\tE\tlnk({}K)\tlnk({}K)\tlnk({}K)\n'.format(
-            T_eg[0], T_eg[1], T_eg[2], T_eg[0], T_eg[1], T_eg[2])
-        for i in range(len(rxn)):
-            info += '{}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t'.format(
-                rxn[i], lnA_true[i], n_true[i], E_true[i],
-                lnk_true[str(T_eg[0])][i], lnk_true[str(T_eg[1])][i], lnk_true[str(T_eg[2])][i])
-            info += '{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}\n'.format(
-                lnA_pred[i], n_pred[i], E_pred[i],
-                lnk_pred[str(T_eg[0])][i], lnk_pred[str(T_eg[1])][i], lnk_pred[str(T_eg[2])][i])
-        f.writelines(info)
-        if print_info:
-            print(info)
-    return rmse
+    info += '\nDetails of predictions:\n'
+    info += '# Reaction, true(lnA n Ea), pred(lnA n Ea), uncertainty factor of k by temperature(500, 600, ..., 2000)\n'
+    for i in range(len(rxn)):
+        info += '{:<50s}\t{:.4f}\t{:.4f}\t{:.1f}\t{:.4f}\t{:.4f}\t{:.1f}\t'.format(
+            rxn[i], lnA_true[i], n_true[i], E_true[i], lnA_pred[i], n_pred[i], E_pred[i])
+        for t in k_uf:
+            info += '{:.2f}\t'.format(k_uf[t][i])
+        info += '\n'
+
+    if print_info:
+        print(info)
+
+    if save_file:
+        with open(save_file, 'w') as f:
+            f.writelines(info)
+
+    return [r2_score(lnA_true, lnA_pred), r2_score(n_true, n_pred), r2_score(E_true, E_pred),
+            r2_score(lnk_all_true, lnk_all_pred)]
 
 
 if __name__ == '__main__':

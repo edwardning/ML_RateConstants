@@ -8,6 +8,7 @@ from torch import nn
 from torch.utils import data
 import numpy as np
 import optuna
+import random
 from sklearn.model_selection import StratifiedKFold, KFold
 from collections import OrderedDict
 from utils.tools import *
@@ -229,10 +230,13 @@ def fitting_model_B(rxns, temps, truth, pred):
     return reactions, true_values, pred_values
 
 
-def normalize_lnA_n_E(database):
+def normalize_lnA_n_E(database, uf=None):
+    # uf: uncertainty factor of k, max(pred/true, true/pred)
     database['lnA_n_E'] = []
     for i in range(len(database['A'])):
         A, n, E = database['A'][i], database['n'][i], database['E'][i]
+        if uf:
+            A *= random.uniform(1 / uf, uf)
         norm_lnA = (math.log(A) - lnA_min) / (lnA_max - lnA_min)
         norm_n = (n - n_min) / (n_max - n_min)
         norm_E = (E - E_min) / (E_max - E_min)
@@ -268,11 +272,8 @@ def generate_T_points(database):
     return database
 
 
-def split_sp(npy):
+def split_sp(np_data):
     # return index for each species
-    np_data = torch.load(npy)
-    for a in np_data:
-        np_data[a] = np_data[a].tolist()
     ans = {}
     for i in range(len(np_data['sub_mech'])):
         if np_data['sub_mech'][i] not in ans:
@@ -283,12 +284,8 @@ def split_sp(npy):
 
 
 def model_A_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
-                  batch_size=128, lr=9.25e-05, weight_decay=0.05):
-    # load database
-    OME = torch.load(r'.\data\database.npy')
-    OME = normalize_lnA_n_E(OME)  # normalization
-
-    features, targets, labels = OME['rxnfp'], OME['lnA_n_E'], OME['rc']
+                  batch_size=128, lr=9.25e-05, weight_decay=0.05, data_input=None):
+    features, targets, labels = data_input['rxnfp'], data_input['lnA_n_E'], data_input['rc']
     ans = {'rxn': [], 'true': [], 'pred': [], 'loss': []}  # record predictions in each fold
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)  # Stratified K-Fold split
     for i, (train_index, test_index) in enumerate(skf.split(features, labels)):
@@ -325,28 +322,26 @@ def model_A_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
 
         # validate
         model.load_state_dict(torch.load(r'.\models\model_A\fold_{}.pth'.format(i+1)))
-        rxn, xx, yy = validate(model, test_iter, OME['rxn'], features)
+        rxn, xx, yy = validate(model, test_iter, data_input['rxn'], features)
         ans['rxn'].extend(rxn)
         ans['true'].extend(xx)
         ans['pred'].extend(yy)
-    score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_A.txt'))
+    # score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_A.txt'))
     print(ans['loss'])
-    return sum(ans['loss']) / len(ans['loss'])
+    return ans
 
 
 def model_B_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
-                  batch_size=128, lr=9.25e-05, weight_decay=0.05):
-    # load database
-    OME = torch.load(r'.\data\database.npy')
+                  batch_size=128, lr=9.25e-05, weight_decay=0.05, data_input=None):
 
     ans = {'rxn': [], 'T': [], 'true': [], 'pred': [], 'loss': []}  # record predictions in each fold
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)  # Stratified K-Fold split
-    for i, (train_index, test_index) in enumerate(skf.split(OME['rxnfp'], OME['rc'])):
+    for i, (train_index, test_index) in enumerate(skf.split(data_input['rxnfp'], data_input['rc'])):
         # The reaction must first be split and then generate sampling points at different temperatures
         OME_train, OME_test = {}, {}
-        for k in OME:
-            OME_train[k] = OME[k][train_index]
-            OME_test[k] = OME[k][test_index]
+        for k in data_input:
+            OME_train[k] = data_input[k][train_index]
+            OME_test[k] = data_input[k][test_index]
         OME_train = generate_T_points(OME_train)
         OME_test = generate_T_points(OME_test)
         train_features, train_labels = OME_train['rxnfp'], OME_train['rate']
@@ -392,19 +387,15 @@ def model_B_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
         ans['true'].extend(xx)
         ans['pred'].extend(yy)
 
-    reactions, true_values, pred_values = fitting_model_B(ans['rxn'], ans['T'], ans['true'], ans['pred'])
-    score(reactions, true_values, pred_values, print_info=True, save_file=os.path.abspath(r'.\docs\score_B.txt'))
+    ans['rxn'], ans['true'], ans['pred'] = fitting_model_B(ans['rxn'], ans['T'], ans['true'], ans['pred'])
+    # score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_B.txt'))
     print(ans['loss'])
-    return sum(ans['loss']) / len(ans['loss'])
+    return ans
 
 
 def model_C_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
-                  batch_size=128, lr=9.25e-05, weight_decay=0.05):
-    # load database
-    OME = torch.load(r'.\data\database.npy')
-    OME = normalize_lnA_n_E(OME)  # normalization
-
-    features, targets, labels = OME['rxnfp'], OME['lnA_n_E'], OME['rc']
+                  batch_size=128, lr=9.25e-05, weight_decay=0.05, data_input=None):
+    features, targets, labels = data_input['rxnfp'], data_input['lnA_n_E'], data_input['rc']
     ans = {'rxn': [], 'true': [], 'pred': [], 'loss': []}  # record predictions in each fold
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)  # Stratified K-Fold split
     for i, (train_index, test_index) in enumerate(skf.split(features, labels)):
@@ -430,7 +421,7 @@ def model_C_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
         optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
         # train model
-        best_loss = 1.0
+        best_loss = 10.0
         for epoch in range(num_epochs):
             train_loss = train(model, train_iter, loss, optimizer)
             test_loss = evaluate(model, test_iter, loss)
@@ -443,24 +434,19 @@ def model_C_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
 
         # validate
         model.load_state_dict(torch.load(r'.\models\model_C\fold_{}.pth'.format(i+1)))
-        rxn, xx, yy = validate(model, test_iter, OME['rxn'], features)
+        rxn, xx, yy = validate(model, test_iter, data_input['rxn'], features)
         ans['rxn'].extend(rxn)
         ans['true'].extend(xx)
         ans['pred'].extend(yy)
-    score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_C_test.txt'))
+    # score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_C_test.txt'))
     print(ans['loss'])
-    return sum(ans['loss']) / len(ans['loss'])
+    return ans
 
 
-def model_C_species_cv(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
-                       batch_size=128, lr=9.25e-05, weight_decay=0.05):
-    # load database
-    OME = torch.load(r'.\data\database.npy')
-    OME = normalize_lnA_n_E(OME)  # normalization
-
-    species_index = split_sp(r'.\data\database.npy')
-
-    features, targets, labels = OME['rxnfp'], OME['lnA_n_E'], OME['rc']
+def model_C_species(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu',
+                    batch_size=128, lr=9.25e-05, weight_decay=0.05, data_input=None):
+    species_index = split_sp(data_input)
+    features, targets, labels = data_input['rxnfp'], data_input['lnA_n_E'], data_input['rc']
     ans = {'rxn': [], 'true': [], 'pred': [], 'loss': []}  # record predictions in each fold
     for spec in species_index:
         train_index, test_index = [], np.array(species_index[spec])
@@ -503,14 +489,14 @@ def model_C_species_cv(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='R
 
         # validate
         model.load_state_dict(torch.load(r'.\models\model_C\fold_{}.pth'.format(spec)))
-        rxn, xx, yy = validate(model, test_iter, OME['rxn'], features)
+        rxn, xx, yy = validate(model, test_iter, data_input['rxn'], features)
         ans['rxn'].extend(rxn)
         ans['true'].extend(xx)
         ans['pred'].extend(yy)
-        score(rxn, xx, yy, print_info=False, save_file=os.path.abspath(r'.\docs\score_C_{}.txt'.format(spec)))
-    score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_C_spec.txt'))
+        # score(rxn, xx, yy, print_info=False, save_file=os.path.abspath(r'.\docs\score_C_{}.txt'.format(spec)))
+    # score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=os.path.abspath(r'.\docs\score_C_spec.txt'))
     print(ans['loss'])
-    return sum(ans['loss']) / len(ans['loss'])
+    return ans
 
 
 def objective(trail):
@@ -524,8 +510,59 @@ def objective(trail):
     # optima = trail.suggest_categorical('optimizer', ['Adam', 'SGD'])
     weight_decay = trail.suggest_float('weight_decay', 0, 1, step=0.01)
 
-    loss = model_B_train(drop_out, num_hl, num_neurons, active, batch_size, lr,  weight_decay)
-    return loss
+    # load database and normalization
+    dataset_source = torch.load(r'.\data\database.npy')
+    dataset_normalized = normalize_lnA_n_E(dataset_source)
+    # ans = model_A_train(drop_out, num_hl, num_neurons, active, batch_size, lr, weight_decay, dataset_normalized)
+    # ans = model_B_train(drop_out, num_hl, num_neurons, active, batch_size, lr, weight_decay, dataset_source)
+    ans = model_C_train(drop_out, num_hl, num_neurons, active, batch_size, lr, weight_decay, dataset_normalized)
+    return sum(ans['loss']) / len(ans['loss'])
+
+
+def train_model(model='C', ensemble_learning=10, save_evaluation=None, save_predictions=None):
+    """
+    :param model: A, B or C
+    :param ensemble_learning: number of ensemble models. if = 1, no ensemble learning.
+    :param save_evaluation: file path to save the evaluation result
+    :param save_predictions: save the source data of model predictions
+    :return:
+    """
+    # load database and normalization
+    dataset_source = torch.load(r'.\data\database.npy')
+    dataset_normalized = normalize_lnA_n_E(dataset_source)
+    ans = {}
+    for i in range(ensemble_learning):
+        print('Running resemble learning on model {}, {:0>2d}'.format(model, i + 1))
+        if model == 'A':
+            tmp = model_A_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu', batch_size=128,
+                                lr=9.25e-05, weight_decay=0.05, data_input=dataset_normalized)
+        elif model == 'B':
+            tmp = model_B_train(drop_out=0.1, num_hl=4, num_neurons=196, active_func='ReLu', batch_size=64, lr=3.2e-04,
+                                weight_decay=0.18, data_input=dataset_source)  # cross-validation for B
+        elif model == 'C':
+            tmp = model_C_train(drop_out=0.13, num_hl=6, num_neurons=241, active_func='ReLu', batch_size=128,
+                                lr=1.065e-04, weight_decay=0.63, data_input=dataset_normalized)
+        elif model == 'species':
+            tmp = model_C_species(drop_out=0.13, num_hl=6, num_neurons=241, active_func='ReLu', batch_size=128,
+                                  lr=1.065e-04, weight_decay=0.63, data_input=dataset_normalized)
+        else:
+            print('Incorrect model. Please choose from A, B or C')
+            return 0
+        score(tmp['rxn'], tmp['true'], tmp['pred'], save_file=r'.\evaluation\score_{}_{:0>2d}-spec.txt'.format(model, i + 1))
+        torch.save(tmp, r'.\evaluation\model_{}_tmp_{:0>2d}-spec.pth'.format(model, i + 1))
+        ans = merge_socre(tmp, ans)
+    ans['true'] /= ensemble_learning
+    ans['pred'] /= ensemble_learning
+
+    if not save_evaluation:
+        save_evaluation = os.path.abspath(r'.\evaluation\Model_{}_evaluation-species.txt'.format(model))
+    score(ans['rxn'], ans['true'], ans['pred'], print_info=True, save_file=save_evaluation)
+
+    if not save_predictions:
+        save_predictions = os.path.abspath(r'.\evaluation\Model_{}_source-species.pth'.format(model))
+    torch.save(ans, save_predictions)
+
+    return ans
 
 
 if __name__ == '__main__':
@@ -546,20 +583,4 @@ if __name__ == '__main__':
     optuna.visualization.plot_parallel_coordinate(study).show()
 
     """
-
-    model_A_train(drop_out=0.0465, num_hl=5, num_neurons=91, active_func='ReLu', batch_size=128, lr=9.25e-05,
-                  weight_decay=0.05)  # cross-validation for model A
-
-    """
-    model_B_train(drop_out=0.1, num_hl=4, num_neurons=196, active_func='ReLu', batch_size=64, lr=3.2e-04,
-                  weight_decay=0.18)  # cross-validation for B
-
-    model_C_train(drop_out=0.13, num_hl=6, num_neurons=241, active_func='ReLu', batch_size=128, lr=1.065e-04,
-                  weight_decay=0.63)  # cross-validation for C
-    
-    model_C_species_cv(drop_out=0.13, num_hl=6, num_neurons=241, active_func='ReLu', batch_size=128, lr=1.065e-04,
-                       weight_decay=0.63)  # species-based cross-validation for model C
-    """
-
-
-
+    train_model(model='C', ensemble_learning=10)
